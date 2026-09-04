@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	relaypb "github.com/zhenya30000/ble-device-gateway/gen/relay/v1"
 
@@ -24,8 +25,10 @@ type RelayClient struct {
 }
 
 func NewRelayClient(address string) (*RelayClient, error) {
+	target := directTarget(address)
+
 	conn, err := grpc.NewClient(
-		address,
+		target,
 		grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		),
@@ -38,6 +41,14 @@ func NewRelayClient(address string) (*RelayClient, error) {
 		conn:   conn,
 		client: relaypb.NewRelayServiceClient(conn),
 	}, nil
+}
+
+func directTarget(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+
+	return "passthrough:///" + address
 }
 
 func (c *RelayClient) SetChannel(
