@@ -1,0 +1,33 @@
+services:
+  cloud-control:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    environment:
+      EDGE_TOKEN: ${EDGE_TOKEN:-dev-edge-token}
+      CONTROL_API_TOKEN: ${CONTROL_API_TOKEN:-dev-api-token}
+      HTTP_ADDR: :8080
+      GRPC_ADDR: :50052
+      COMMAND_TIMEOUT: ${COMMAND_TIMEOUT:-6s}
+    ports:
+      - "8080:8080"
+      - "50052:50052"
+    restart: unless-stopped
+
+  edge-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.edge
+    depends_on:
+      - cloud-control
+    environment:
+      EDGE_TOKEN: ${EDGE_TOKEN:-dev-edge-token}
+      DEVICE_ID: ${DEVICE_ID:-rv-001}
+      CLOUD_GRPC_ADDR: cloud-control:50052
+      CLOUD_INSECURE: "true"
+      BLE_GATEWAY_ADDR: host.docker.internal:50051
+      EDGE_COMMAND_TIMEOUT: ${EDGE_COMMAND_TIMEOUT:-4s}
+      HEARTBEAT_INTERVAL: ${HEARTBEAT_INTERVAL:-15s}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
