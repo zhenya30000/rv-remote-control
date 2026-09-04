@@ -60,7 +60,7 @@ func TestRelayCommand(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPut,
 		"/v1/devices/rv-001/relays/3",
-		strings.NewReader(`{"enabled":true}`),
+		strings.NewReader("{\"enabled\":true}"),
 	)
 	request.Header.Set("Authorization", "Bearer secret")
 
@@ -108,7 +108,7 @@ func TestRelayCommandRequiresAuth(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPut,
 		"/v1/devices/rv-001/relays/1",
-		strings.NewReader(`{"enabled":true}`),
+		strings.NewReader("{\"enabled\":true}"),
 	)
 
 	response := httptest.NewRecorder()
