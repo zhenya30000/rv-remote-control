@@ -88,8 +88,7 @@ func run() error {
 			"address", cfg.ListenAddr,
 			"protocols", "http/1.1,h2c",
 		)
-		if err := server.ListenAndServe();
-			err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
