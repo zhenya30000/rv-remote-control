@@ -63,7 +63,7 @@ func (UnimplementedEdgeControlServiceServer) Connect(
 }
 
 func (UnimplementedEdgeControlServiceServer) mustEmbedUnimplementedEdgeControlServiceServer() {}
-func (UnimplementedEdgeControlServiceServer) testEmbeddedByValue() {}
+func (UnimplementedEdgeControlServiceServer) testEmbeddedByValue()                            {}
 
 type UnsafeEdgeControlServiceServer interface {
 	mustEmbedUnimplementedEdgeControlServiceServer()
