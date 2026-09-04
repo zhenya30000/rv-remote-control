@@ -45,7 +45,7 @@ func New(
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", server.handleHealth)
+	mux.HandleFunc("GET /health", server.handleHealth)
 	mux.HandleFunc(
 		"GET /v1/devices/{deviceID}/status",
 		server.authorize(server.handleStatus),
