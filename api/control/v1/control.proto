@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package control.v1;
+
+option go_package = "github.com/zhenya30000/rv-remote-control/gen/control/v1;controlv1";
+
+service EdgeControlService {
+  rpc Connect(stream EdgeMessage) returns (stream CloudMessage);
+}
+
+message EdgeMessage {
+  string kind = 1;
+  string command_id = 2;
+  bool success = 3;
+  string error = 4;
+  int64 unix_millis = 5;
+}
+
+message CloudMessage {
+  string kind = 1;
+  string command_id = 2;
+  uint32 channel = 3;
+  bool enabled = 4;
+  int64 unix_millis = 5;
+}
