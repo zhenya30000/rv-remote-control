@@ -67,6 +67,10 @@ func New(
 	return server
 }
 
+func (s *Server) Handler() http.Handler {
+	return s.httpServer.Handler
+}
+
 func (s *Server) ListenAndServe() error {
 	return s.httpServer.ListenAndServe()
 }
