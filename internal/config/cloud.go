@@ -8,7 +8,7 @@ import (
 )
 
 type Cloud struct {
-	ListenAddr       string
+	ListenAddr      string
 	ControlAPIToken string
 	EdgeToken       string
 	CommandTimeout  time.Duration
@@ -26,7 +26,7 @@ func LoadCloud() (Cloud, error) {
 	}
 
 	cfg := Cloud{
-		ListenAddr:       listenAddr,
+		ListenAddr:      listenAddr,
 		ControlAPIToken: os.Getenv("CONTROL_API_TOKEN"),
 		EdgeToken:       os.Getenv("EDGE_TOKEN"),
 		CommandTimeout:  timeout,
