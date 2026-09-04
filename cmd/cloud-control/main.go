@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,38 +42,54 @@ func run() error {
 	registry := cloud.NewRegistry()
 	defer registry.Close()
 
-	grpcListener, err := net.Listen("tcp", cfg.GRPCAddr)
-	if err != nil {
-		return err
-	}
-	defer grpcListener.Close()
-
 	grpcServer := grpc.NewServer()
 	controlpb.RegisterEdgeControlServiceServer(
 		grpcServer,
 		cloud.NewGRPCServer(registry, cfg.EdgeToken),
 	)
 
-	httpServer := httpapi.New(
-		cfg.HTTPAddr,
+	apiServer := httpapi.New(
+		cfg.ListenAddr,
 		cfg.ControlAPIToken,
 		registry,
 		cfg.CommandTimeout,
 	)
 
-	serverErr := make(chan error, 2)
-
-	go func() {
-		slog.Info("HTTP control API listening", "address", cfg.HTTPAddr)
-		err := httpServer.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
+	handler := http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(
+			r.Header.Get("Content-Type"),
+			"application/grpc",
+		) {
+			grpcServer.ServeHTTP(w, r)
+			return
 		}
-	}()
 
+		apiServer.Handler().ServeHTTP(w, r)
+	})
+
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	server := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		Protocols:         protocols,
+	}
+
+	serverErr := make(chan error, 1)
 	go func() {
-		slog.Info("edge gRPC endpoint listening", "address", cfg.GRPCAddr)
-		if err := grpcServer.Serve(grpcListener); err != nil {
+		slog.Info(
+			"cloud control listening",
+			"address", cfg.ListenAddr,
+			"protocols", "http/1.1,h2c",
+		)
+		if err := server.ListenAndServe();
+			err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
@@ -91,8 +107,6 @@ func run() error {
 	)
 	defer cancel()
 
-	_ = httpServer.Shutdown(shutdownCtx)
-
 	grpcStopped := make(chan struct{})
 	go func() {
 		grpcServer.GracefulStop()
@@ -104,6 +118,8 @@ func run() error {
 	case <-shutdownCtx.Done():
 		grpcServer.Stop()
 	}
+
+	_ = server.Shutdown(shutdownCtx)
 
 	return nil
 }
