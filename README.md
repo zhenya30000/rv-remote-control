@@ -139,6 +139,8 @@ Expected response:
 {"status":"ok"}
 ```
 
+The endpoint intentionally uses `/health` rather than `/healthz`, because the latter is intercepted by the Cloud Run frontend instead of reaching the container.
+
 ### Device status
 
 ```http
@@ -291,7 +293,7 @@ Docker image
 
 The container image is built from `Dockerfile.cloud`. Cloud Run provides the `PORT` environment variable; `cloud-control` uses it automatically and serves both REST and gRPC on that port.
 
-A minimal manual deployment flow is:
+For an existing Cloud Run service whose runtime configuration and application tokens are already set, a new revision can be built and deployed manually with:
 
 ```bash
 PROJECT_ID=$(gcloud config get-value project)
@@ -308,7 +310,9 @@ gcloud run deploy rv-remote-control \
   --use-http2
 ```
 
-The service requires `EDGE_TOKEN` and `CONTROL_API_TOKEN`. They are currently supplied as runtime configuration and should be moved to Secret Manager before treating the deployment as production infrastructure.
+A fresh service also needs `EDGE_TOKEN` and `CONTROL_API_TOKEN`, public invocation configured for the application-level auth model, end-to-end HTTP/2 enabled, and the service constrained to a single active instance while the session registry remains in memory.
+
+The tokens are currently supplied as runtime configuration. Moving them to Secret Manager is one of the next hardening steps.
 
 ### Remote edge test
 
