@@ -8,8 +8,7 @@ import (
 )
 
 type Cloud struct {
-	HTTPAddr        string
-	GRPCAddr        string
+	ListenAddr       string
 	ControlAPIToken string
 	EdgeToken       string
 	CommandTimeout  time.Duration
@@ -21,9 +20,13 @@ func LoadCloud() (Cloud, error) {
 		return Cloud{}, err
 	}
 
+	listenAddr := env("CLOUD_ADDR", ":8080")
+	if port := os.Getenv("PORT"); port != "" {
+		listenAddr = ":" + port
+	}
+
 	cfg := Cloud{
-		HTTPAddr:        env("HTTP_ADDR", ":8080"),
-		GRPCAddr:        env("GRPC_ADDR", ":50052"),
+		ListenAddr:       listenAddr,
 		ControlAPIToken: os.Getenv("CONTROL_API_TOKEN"),
 		EdgeToken:       os.Getenv("EDGE_TOKEN"),
 		CommandTimeout:  timeout,
