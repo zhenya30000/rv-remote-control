@@ -2,9 +2,11 @@
 
 A small Go control plane for sending commands from a remote client to hardware inside an RV.
 
-The RV is usually connected through mobile internet, so it cannot rely on a stable public IP address or inbound connections. The edge agent inside the vehicle therefore opens an **outbound long-lived bidirectional gRPC stream** to the cloud. The cloud service exposes a small HTTP API for remote clients and routes commands through the active stream.
+The RV is usually connected through mobile internet, so it cannot rely on a stable public IP address or inbound connections. The edge agent inside the vehicle therefore opens an **outbound long-lived bidirectional gRPC stream** to the cloud. The cloud service exposes a small authenticated HTTP API and routes commands through the active device session.
 
 The first supported command is switching channels on the JDY-33 relay exposed by [`ble-device-gateway`](https://github.com/zhenya30000/ble-device-gateway).
+
+The cloud side is currently deployed on **Google Cloud Run**. A full remote path has been verified from an HTTPS client through Cloud Run, the bidirectional gRPC stream, the local edge agent, and the BLE gateway in mock mode.
 
 ## Architecture
 
@@ -13,38 +15,59 @@ Phone / remote client
         |
         | HTTPS
         v
-+----------------------------+
-| Cloud Control Service      |
-|                            |
-| HTTP API :8080             |
-| device session registry    |
-| gRPC endpoint :50052       |
-+-------------+--------------+
-              ^
-              |
-              | long-lived bidirectional gRPC
-              | outbound connection from RV
-              |
-+-------------+--------------+
-| RV Edge Agent              |
-|                            |
-| cloud connection lifecycle |
-| heartbeat + command result |
-+-------------+--------------+
-              |
-              | local gRPC
-              v
-+----------------------------+
-| BLE Device Gateway         |
-| RelayService.SetChannel    |
-+-------------+--------------+
-              |
-              | BLE
-              v
-          JDY-33 relay
++----------------------------------+
+| Google Cloud Run                 |
+|                                  |
+| TLS termination                  |
+| HTTP/2 -> h2c                    |
++----------------+-----------------+
+                 |
+                 | single container port :8080
+                 v
++----------------------------------+
+| Cloud Control Service            |
+|                                  |
+| REST API + gRPC on one port      |
+| in-memory device session registry|
++----------------+-----------------+
+                 ^
+                 |
+                 | long-lived bidirectional gRPC
+                 | outbound TLS connection from RV
+                 |
++----------------+-----------------+
+| RV Edge Agent                    |
+|                                  |
+| connection lifecycle             |
+| heartbeat + command execution    |
++----------------+-----------------+
+                 |
+                 | local gRPC
+                 v
++----------------------------------+
+| BLE Device Gateway               |
+| RelayService.SetChannel          |
++----------------+-----------------+
+                 |
+                 | BLE
+                 v
+             JDY-33 relay
 ```
 
-The cloud does not initiate a connection to the RV. This is intentional: the vehicle may be behind carrier-grade NAT, have a changing IP address, or temporarily lose connectivity.
+The cloud never initiates a connection to the RV. This is intentional: the vehicle may be behind carrier-grade NAT, have a changing IP address, or temporarily lose connectivity.
+
+### One-port Cloud Run transport
+
+Cloud Run exposes a single ingress port to the container, while this service needs both a regular HTTP API and native gRPC.
+
+`cloud-control` therefore serves both protocols on `:8080`:
+
+- HTTP/1.1 or HTTP/2 requests are routed to the REST API;
+- HTTP/2 requests with `Content-Type: application/grpc` are routed to the gRPC server;
+- local deployments use plaintext HTTP/h2c;
+- the public Cloud Run endpoint terminates TLS and forwards HTTP/2 to the container.
+
+The edge agent connects to the public Cloud Run hostname over TLS on port `443`.
 
 ## Command flow
 
@@ -74,7 +97,7 @@ CommandResult
 HTTP 200 "applied"
 ```
 
-The MVP deliberately does **not queue commands for offline vehicles**. A relay command is only accepted while the device has an active cloud session. This avoids applying an old command unexpectedly after the RV reconnects hours later.
+The MVP deliberately does **not queue commands for offline vehicles**. A relay command is accepted only while the device has an active cloud session. This avoids applying an old command unexpectedly after the RV reconnects hours later.
 
 ## Repository layout
 
@@ -83,7 +106,7 @@ api/control/v1/       cloud <-> edge protobuf contract
 gen/control/v1/       generated protobuf / gRPC code
 
 cmd/
-├── cloud-control/    HTTP API + edge gRPC endpoint
+├── cloud-control/    REST API + edge gRPC endpoint
 └── edge-agent/       outbound cloud client + local gateway client
 
 internal/
@@ -92,11 +115,29 @@ internal/
 ├── config/           environment configuration
 ├── edge/             stream lifecycle, heartbeat and command execution
 ├── gateway/          client for ble-device-gateway RelayService
-├── httpapi/          phone-facing HTTP API
+├── httpapi/          remote-client HTTP API
 └── retry/            context-aware exponential reconnect backoff
 ```
 
 ## HTTP API
+
+### Health
+
+```http
+GET /health
+```
+
+Example:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
 
 ### Device status
 
@@ -112,6 +153,8 @@ curl \
   -H "Authorization: Bearer dev-api-token" \
   http://localhost:8080/v1/devices/rv-001/status
 ```
+
+An active edge session returns connection information such as `connected_at` and `last_seen`. An unknown or disconnected device returns `online: false`.
 
 ### Set relay channel
 
@@ -158,12 +201,12 @@ If the RV is offline, the API returns `503 Service Unavailable`.
 
 The MVP uses two independent bearer tokens:
 
-- `CONTROL_API_TOKEN` authenticates the phone-facing HTTP API;
+- `CONTROL_API_TOKEN` authenticates the remote-client HTTP API;
 - `EDGE_TOKEN` authenticates the outbound edge gRPC connection.
 
 The edge also sends `x-device-id` as gRPC metadata.
 
-Token comparison is constant-time. For production deployment the public endpoints should always be behind TLS. A later version can replace the shared edge token with per-device credentials or mutual TLS.
+Token comparison is constant-time. Public traffic is protected by TLS when deployed to Cloud Run. A later version can replace the shared edge token with per-device credentials or mutual TLS.
 
 ## Local end-to-end test
 
@@ -201,7 +244,7 @@ DEVICE_ID=rv-001
 docker compose up --build
 ```
 
-The edge container connects to the BLE gateway running on the host through `host.docker.internal:50051`.
+The cloud service listens on `:8080`. The edge container connects to it over h2c and reaches the BLE gateway running on the host through `host.docker.internal:50051`.
 
 ### 4. Check connection status
 
@@ -235,6 +278,71 @@ The command travels through the cloud gRPC stream, reaches the edge agent and be
 
 Because the gateway is in mock mode, no physical relay is required.
 
+## Google Cloud Run deployment
+
+The current deployment uses:
+
+```text
+Docker image
+    -> Artifact Registry (europe-west3)
+    -> Cloud Run
+    -> public HTTPS / HTTP2 endpoint
+```
+
+The container image is built from `Dockerfile.cloud`. Cloud Run provides the `PORT` environment variable; `cloud-control` uses it automatically and serves both REST and gRPC on that port.
+
+A minimal manual deployment flow is:
+
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+REGION=europe-west3
+TAG=$(git rev-parse --short HEAD)
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/rv-remote-control/cloud-control:$TAG"
+
+docker build -f Dockerfile.cloud -t "$IMAGE" .
+docker push "$IMAGE"
+
+gcloud run deploy rv-remote-control \
+  --image="$IMAGE" \
+  --region="$REGION" \
+  --use-http2
+```
+
+The service requires `EDGE_TOKEN` and `CONTROL_API_TOKEN`. They are currently supplied as runtime configuration and should be moved to Secret Manager before treating the deployment as production infrastructure.
+
+### Remote edge test
+
+With the cloud service deployed and the local BLE gateway running, the edge can connect directly to Cloud Run:
+
+```bash
+CLOUD_GRPC_ADDR=<cloud-run-hostname>:443
+CLOUD_INSECURE=false
+```
+
+The verified remote path is:
+
+```text
+HTTPS client
+  -> Cloud Run
+  -> cloud-control
+  -> bidirectional gRPC/TLS
+  -> local edge-agent
+  -> local gRPC
+  -> BLE Device Gateway mock
+  -> CommandResult
+  -> HTTP response
+```
+
+The remote test has verified:
+
+- TLS connectivity from the edge agent to Cloud Run;
+- long-lived bidirectional gRPC through Cloud Run;
+- heartbeat and `online` status updates;
+- command routing to the local BLE gateway;
+- acknowledgement propagation back to the HTTP client.
+
+The remaining hardware smoke test is running the same cloud path against the physical JDY-33 relay instead of the gateway mock.
+
 ## Edge connection lifecycle
 
 The edge agent reconnects automatically:
@@ -246,7 +354,7 @@ connect
 stream active
   |
   v
-network failure
+network failure / stream termination
   |
   v
 1s -> 2s -> 4s -> 8s -> 16s -> 30s
@@ -257,21 +365,15 @@ connect again
 
 If a connection remained healthy for at least 30 seconds, the retry delay resets to one second.
 
-Heartbeats update the device's `last_seen` timestamp in the cloud registry.
+Heartbeats update the device's `last_seen` timestamp in the cloud registry. This also makes the edge tolerant of cloud-side stream termination: it reconnects instead of assuming a permanent session.
 
-## TLS
+## Scaling note
 
-For local development:
+The active-device registry is intentionally in memory for this MVP. That keeps the control path small and easy to reason about, but it also means the current design assumes a single active `cloud-control` instance.
 
-```text
-CLOUD_INSECURE=true
-```
+Horizontal scaling would require moving session coordination outside the process, for example through a shared broker or other routing layer, so that an HTTP request can reach the instance that owns a device's active gRPC stream.
 
-For AWS deployment, leave it false. The edge agent then uses TLS and the operating system certificate roots. `CLOUD_SERVER_NAME` can be set when explicit TLS server-name verification is required.
-
-The application containers themselves can stay on plaintext HTTP/gRPC behind an AWS Application Load Balancer that terminates TLS.
-
-## Tests
+## Tests and CI
 
 ```bash
 go test ./...
@@ -285,6 +387,7 @@ The tests cover:
 - offline-device behavior;
 - authenticated HTTP relay control;
 - HTTP authorization;
+- health endpoint behavior;
 - edge relay command execution and failure reporting.
 
 GitHub Actions also builds both Go binaries and both Docker images.
@@ -293,19 +396,23 @@ GitHub Actions also builds both Go binaries and both Docker images.
 
 Implemented:
 
-- HTTP control API;
+- authenticated HTTP control API;
+- public health endpoint;
 - outbound edge connection;
 - bidirectional gRPC control stream;
+- REST and gRPC multiplexed on one Cloud Run-compatible port;
 - active device registry;
 - command IDs and acknowledgements;
 - relay command forwarding to BLE Device Gateway;
 - heartbeat / online status;
 - context cancellation;
 - reconnect with exponential backoff;
+- TLS connection to the public cloud endpoint;
 - local mock-friendly setup;
-- bearer-token authentication;
-- Docker images;
-- Docker Compose;
+- Docker images and Docker Compose;
+- Google Artifact Registry image deployment;
+- Google Cloud Run deployment;
+- local and remote end-to-end tests;
 - tests and CI.
 
 Intentionally not implemented yet:
@@ -314,7 +421,8 @@ Intentionally not implemented yet:
 - offline command queue;
 - multi-user authorization;
 - per-device certificates;
+- shared session state for horizontal scaling;
 - metrics / tracing;
-- AWS infrastructure as code.
-
-The next step is deploying the cloud side to AWS and then pointing the edge agent at the public TLS endpoint.
+- Secret Manager integration;
+- automated GitHub Actions deployment / Workload Identity Federation;
+- infrastructure as code.
